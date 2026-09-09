@@ -1,243 +1,155 @@
 # Replora
 
-**Evidence-grounded AI email suggestions with measurable quality, trust, and risk.**
+**Evidence-grounded AI support agent for the Hiver SDE Intern take-home assignment.**
 
-Replora is an AI email copilot prototype for customer-support teams. It retrieves similar historical conversations, generates a suggested reply with an LLM, independently validates the reply, evaluates semantic quality, and converts the findings into a risk-aware sendability decision.
+Replora is designed around the assignment's central requirement: build a support agent from the **Customer Support on Twitter** dataset and prove that it works. The system is intended to operate on one selected brand and combines intent classification, historical-resolution retrieval, LLM reply generation, independent validation, and an auto-handle/escalate decision.
 
-The central design principle is simple: **an LLM may generate a reply and help judge semantic quality, but it does not have final authority over safety-sensitive claims.**
+## Assignment alignment
 
-## Why Replora
+| Requirement | Repository component |
+|---|---|
+| Public runnable repo | This repository |
+| Customer Support on Twitter source | `data/prepare_twitter.py` |
+| Brand-specific subset | `data/raw_brand_subset.json` generated locally |
+| Intent classification | `replora/intents.py` |
+| Historical grounded reply | `replora/retrieval.py` + `replora/generator.py` |
+| Auto-handle / escalation | `replora/decision.py` |
+| 150-250 golden examples | `data/golden_set.json` to be populated from the selected brand |
+| Automated evaluation | `replora/evaluator.py` + `replora/validation.py` |
+| LLM-as-judge | `replora/evaluator.py` |
+| Human-vs-judge agreement | `docs/EVALUATION_PROTOCOL.md` |
+| Baselines | `replora/baselines.py` |
+| Failure analysis/report | `reports/FINAL_REPORT_TEMPLATE.md` |
+| Decision log | `docs/DECISION_LOG.md` |
 
-A fluent support reply can still be dangerous. It may invent a refund, promise a delivery date, claim an account action happened, contradict the customer's state, or request a secret. Replora separates generation from verification.
+**Important:** the repository previously contained a small synthetic email benchmark used during prototyping. It is not presented as the Hiver golden set and must not be used as evidence of assignment performance. The assignment benchmark must be built from the real Twitter dataset.
 
-It answers two questions:
+## Data source and provenance
 
-1. **How good is this suggested reply?**
-2. **Is there evidence that the reply is safe enough for an agent to use?**
+Primary source: **Customer Support on Twitter**, Kaggle dataset `thoughtvector/customer-support-on-twitter`.
 
-## Architecture
+The source contains tweet-level records with `tweet_id`, `author_id`, `inbound`, `created_at`, `text`, `response_tweet_id`, and `in_response_to_tweet_id`. The dataset is multi-turn and conversations can be reconstructed through the response-ID links. urlKaggle dataset pagehttps://www.kaggle.com/datasets/thoughtvector/customer-support-on-twitter
+
+The full dataset is not committed to GitHub. Download it locally, inspect frequent outbound support-account authors, choose one brand, and generate a compact subset.
+
+```bash
+python data/prepare_twitter.py --input data/raw/twcs.csv --list-authors
+python data/prepare_twitter.py --input data/raw/twcs.csv --brand-name <BRAND> --brand-author-id <AUTHOR_ID> --output data/raw_brand_subset.json
+```
+
+The final report must record the selected brand, author ID, sampling rule, exclusions, and labeling protocol.
+
+## Intent classification
+
+The selected brand's training data defines the intent taxonomy. Intents are not imported from Banking77 or invented independently of the selected brand.
+
+`replora/intents.py` provides the lightweight classification path. The first implementation uses the same reproducible retrieval representation as the simple baseline. A stronger classifier can be substituted without changing the evaluation interface.
+
+The golden set must contain a hand-labelled `intent` for every example.
+
+## Response generation
+
+The intended pipeline is:
 
 ```text
-Customer email
-      |
-      v
-Intent-aware retrieval
-      |
-      v
+Customer Twitter message
+        ↓
+Intent classification
+        ↓
+Historical brand-specific retrieval
+        ↓
 Evidence bundle
-      |
-      v
-LLM generator
-      |
-      v
-Generated reply
-      |
-      +-----------------------------+
-      |                             |
-      v                             v
-Independent validation         LLM evaluator
-      |                             |
-  +---+---+---+---+---+       Semantic quality
-  |   |   |   |   |             judgment
-Claims Required Forbidden Contradiction Security
-  |   |   |   |   |
-  +---+---+---+---+
-          |
-          v
-    Validation report
-          |
-          +----------------+
-          |                |
-          v                v
-      Quality           Risk engine
-          |                |
-          +-------+--------+
-                  v
-            Sendability
-       /         |          \
-SAFE TO     NEEDS REVIEW   DO NOT SUGGEST
-SUGGEST
+        ↓
+LLM response generation
+        ↓
+Independent validation
+        ↓
+Auto-handle / Escalate
 ```
 
-If the first LLM reply contains a high-risk issue, Replora can perform one validator-guided refinement pass and validate the revised response again. This is deliberately bounded to avoid an uncontrolled agent loop.
+`replora/generator.py` generates the suggested response. `replora/retrieval.py` retrieves historical examples. `replora/validation.py` checks claim support, required information, contradictions, unsupported operational commitments, forbidden claims, and credential requests.
 
-## Evaluation model
+## Evaluation: the main deliverable
 
-Replora deliberately avoids exact-match accuracy. Two good support replies can use different wording while solving the same customer problem.
+The assignment explicitly values proof over the system. Replora therefore separates three evaluation questions:
 
-The Reply Quality Score is weighted as follows:
+1. **Did the agent understand the customer?** — intent accuracy.
+2. **Did it draft a good, historically grounded reply?** — semantic reply-quality evaluation.
+3. **Did it know when not to act automatically?** — escalation precision/recall/F1.
 
-| Dimension | Weight | Question |
-|---|---:|---|
-| Correctness | 30% | Does the response preserve the correct facts and intent? |
-| Relevance | 25% | Does it address what the customer actually asked? |
-| Completeness | 20% | Does it cover important required points? |
-| Groundedness | 15% | Are claims supported by available evidence? |
-| Tone | 10% | Is it appropriate for customer support? |
+### Reply-quality rubric
 
-Correctness has the largest weight because a polished but incorrect support answer is worse than a less polished correct answer.
+The existing hybrid evaluator scores:
 
-Replora uses a **hybrid evaluator**. The LLM judges semantic dimensions such as correctness, relevance, completeness and tone. The deterministic validation layer independently checks safety-sensitive claims. Deterministic findings can lower groundedness and risk can override a favorable LLM judgment.
+| Dimension | Weight |
+|---|---:|
+| Correctness | 30% |
+| Relevance | 25% |
+| Completeness | 20% |
+| Groundedness | 15% |
+| Tone | 10% |
 
-## Independent validation layer
+Exact-match is deliberately avoided because valid support replies can use different wording. Correctness receives the largest weight because a fluent but factually incorrect support response is more harmful than an imperfectly worded correct response.
 
-`replora/validation.py` is a separate safety-oriented layer. It checks:
+The LLM judge evaluates semantic quality, while deterministic validation independently checks explicit safety-sensitive behavior. A critical deterministic finding can override an optimistic LLM score.
 
-- claim-level evidence support;
-- required-point coverage;
-- forbidden-claim violations;
-- contradictions with explicit customer state;
-- credential and secret requests;
-- unsupported operational commitments;
-- basic structural problems.
+### Golden evaluation set
 
-Claims receive statuses such as **Supported**, **Partially supported**, **Unsupported**, and **Unverified**. Critical findings include contradictions, forbidden claims and security issues.
+The final assignment submission must contain **150-250 hand-labelled held-out examples** from the selected brand.
 
-Example:
+Required fields are represented by `data/golden_set_template.json`:
 
-```text
-Customer:
-"I was charged twice. Can I get a refund?"
+- customer message;
+- intent;
+- expected/reference resolution or reply;
+- escalation requirement;
+- human quality rating for the judge-calibration subset;
+- human escalation label.
 
-Generated:
-"I have processed your refund. You will receive it tomorrow."
+Do not claim human agreement until the human-rating subset has actually been labelled.
 
-Claim 1: refund was processed
-✗ Unsupported — HIGH/CRITICAL RISK
+### Human agreement for the LLM judge
 
-Claim 2: refund arrives tomorrow
-✗ Unsupported — HIGH/CRITICAL RISK
+This is mandatory for the assignment. Follow `docs/EVALUATION_PROTOCOL.md`:
 
-Decision: DO NOT SUGGEST
-```
+- freeze a human-rated subset of approximately 50-75 generated replies;
+- rate reply quality independently from the LLM judge;
+- compare human and judge quality scores using an appropriate correlation/agreement statistic;
+- compare human and judge escalation labels using agreement/F1;
+- inspect disagreements and report examples.
 
-A contradiction is treated separately from ordinary lack of evidence. For example, a customer saying an order has not arrived and a generated reply saying it has arrived is a critical validation finding.
+### Baselines
 
-## Bounded self-correction
+The final benchmark must compare Replora against at least two baselines:
 
-When the first generated reply fails a high-risk validation check, Replora can make one additional generation call using the validator's findings as repair feedback. The initial generator prompt does not contain benchmark forbidden-claim labels; these constraints are applied only after generation. This prevents the benchmark from simply telling the model which negative cases to avoid while still allowing a controlled correction step.
+1. **Trivial baseline:** always predict the majority intent.
+2. **Simple baseline:** nearest historical customer message and return its historical reply, with a fixed escalation policy.
 
-The repaired response is accepted only when validation improves or a critical finding is removed.
+The baseline implementation is in `replora/baselines.py`.
 
-## Sendability
+All systems must be evaluated on the same held-out golden set.
 
-```text
-Critical validation finding
-OR risk >= 50
-OR multiple unsupported claims
-→ DO NOT SUGGEST
+### Leakage control
 
-Quality >= 80
-AND risk <= 20
-AND no unsupported claims
-AND validation >= 80
-→ SAFE TO SUGGEST
+The target example must be excluded from the retrieval pool when evaluating that example. This prevents the model from retrieving its own reference reply.
 
-Otherwise
-→ NEEDS REVIEW
-```
+Interactive retrieval examples are evidence/workflow examples, not hidden truth labels.
 
-These are challenge-time thresholds, not claims of production safety. A human agent remains responsible for the final response.
+## Required report
 
-## Dataset
+`reports/FINAL_REPORT_TEMPLATE.md` is the report structure required by the assignment. It covers:
 
-The checked-in dataset is synthetic and hand-authored for this challenge. It covers billing, refunds, cancellation, account access, 2FA, technical issues, features, shipping, upgrades, invoices, and integrations.
+- problem framing and what was deliberately not built;
+- results against two baselines;
+- top five failure modes with real examples and hypotheses;
+- **"What is misleading about my headline number?"**;
+- what would be done with one more week.
 
-Each example contains:
+`docs/DECISION_LOG.md` contains the 10-15 non-obvious engineering decisions and their rationale.
 
-- incoming email;
-- reference reply;
-- category;
-- required key points;
-- forbidden claims.
+## Running
 
-Forbidden claims are evaluation constraints. They are not included in the initial generation prompt; during benchmark refinement they are supplied only to the post-generation validator so unsafe output can be repaired.
-
-The benchmark uses **leave-one-out evaluation**. For every target, the exact target example is removed from the retrieval pool before generation, so the generator cannot retrieve its own reference answer.
-
-Interactive mode has no ground-truth reference. Retrieved replies are treated as evidence/workflow examples, not as truth labels. Reference replies are used as benchmark ground truth only.
-
-The dataset is intentionally not presented as representative of Hiver production traffic. Synthetic data makes the benchmark reproducible and avoids private customer data. A production system should calibrate the evaluator on a substantially larger human-labeled support dataset.
-
-## Metric validation
-
-Replora does not assume that a metric is trustworthy merely because it produces a plausible number. `tests/test_metric_sanity.py` checks directional properties of the evaluator.
-
-The suite tests that:
-
-- a grounded response scores better and has lower risk than a hallucinated response;
-- missing required information reduces completeness;
-- paraphrases are not rejected just because wording differs;
-- adding an unsafe claim cannot improve the risk score;
-- contradictions trigger a conservative decision;
-- credential/secret requests are rejected.
-
-The intended ranking is:
-
-```text
-Strong + grounded
-      >
-Correct but incomplete
-      >
-Vague / weakly supported
-      >
-Unsupported / hallucinated
-      >
-Contradictory / unsafe
-```
-
-This is **metric sanity validation**, not proof of human correlation. The next production validation step would be a human-labeled dataset: compare human quality/safety ratings with Replora scores, inspect disagreements, measure agreement, and calibrate thresholds.
-
-## Benchmark outputs
-
-`python main.py --evaluate` reports:
-
-- average quality score;
-- average risk score;
-- average validation score;
-- evidence coverage;
-- correctness, relevance, completeness, groundedness and tone;
-- high-risk replies;
-- contradictions and security issues;
-- SAFE / REVIEW / DO NOT SUGGEST counts.
-
-The detailed per-case report is written to `results/evaluation.json`.
-
-## Project structure
-
-```text
-Replora/
-├── data/
-│   ├── dataset.json
-│   └── generate_dataset.py
-├── replora/
-│   ├── __init__.py
-│   ├── models.py
-│   ├── retrieval.py
-│   ├── generator.py
-│   ├── evaluator.py
-│   ├── grounding.py
-│   ├── validation.py
-│   ├── decision.py
-│   └── pipeline.py
-├── tests/
-│   ├── test_retrieval.py
-│   ├── test_evaluator.py
-│   ├── test_grounding.py
-│   ├── test_validation.py
-│   ├── test_decision.py
-│   └── test_metric_sanity.py
-├── results/
-│   └── evaluation.json
-├── main.py
-├── requirements.txt
-├── .env.example
-└── README.md
-```
-
-## Setup
-
-Python 3.11+ is recommended.
+Install dependencies:
 
 ```bash
 python -m venv .venv
@@ -245,78 +157,35 @@ python -m venv .venv
 .venv\\Scripts\\activate
 # macOS/Linux
 source .venv/bin/activate
-
 pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env` and add your LLM API key.
+Configure the LLM API key using `.env` based on `.env.example`.
 
-## Usage
-
-Generate and validate a reply:
+For the current prototype/demo path:
 
 ```bash
-python main.py --email "I was charged twice for my subscription. Can you refund one of the charges?"
+python main.py --email "I was charged twice for my subscription. Can you help?"
 ```
 
-Run the leave-one-out benchmark:
+The legacy synthetic benchmark can still be used for unit-level development, but it is **not** the final Hiver evaluation.
+
+The assignment-specific golden benchmark should be run after `data/golden_set.json` has been created from the selected Twitter brand. The final benchmark command and headline-result artifact should then be recorded in the report so a reviewer can reproduce the result in under 15 minutes on the committed subsample.
+
+## Testing
 
 ```bash
-python main.py --evaluate
+pytest -q
 ```
 
-Run tests:
+GitHub Actions runs the automated tests on pushes and pull requests.
 
-```bash
-pytest
-```
+## What is not claimed
 
-Without an API key, Replora uses a deterministic local demo generator so retrieval, validation, grounding, scoring and sendability can still be demonstrated. Configure an LLM provider for the actual LLM generation required by the challenge.
+The repository does not claim that the current small synthetic prototype proves production quality. The Hiver submission score must come from the real selected-brand golden set, baseline comparison, and human-vs-LLM-judge validation described above.
 
-## Trade-offs
+The headline benchmark can still be misleading because a single brand, historical period, sampling strategy, and human-labeled set may not represent future traffic. LLM judges can also be biased. These limitations must be reported rather than hidden.
 
-### Retrieval instead of fine-tuning
+## AI tools and reproducibility
 
-Retrieval plus few-shot prompting is faster to implement, easier to inspect, and lets new examples be added without retraining. Fine-tuning may improve consistency at scale but adds training and deployment complexity.
-
-### Lightweight retrieval instead of a vector database
-
-The benchmark is small. Local weighted lexical retrieval keeps the challenge reproducible and avoids infrastructure that does not directly improve the evaluation idea.
-
-### Deterministic validation plus LLM evaluation
-
-Rules are strong for explicit safety constraints and operational claims but weak at nuanced semantics. The LLM is stronger at semantic judgment but can be biased or overconfident. Replora therefore uses each where it is strongest and lets deterministic critical findings override optimistic semantic scoring.
-
-### One bounded refinement pass
-
-A validator-guided second generation can repair an unsafe suggestion. The loop is intentionally limited to one retry so the system remains predictable, inexpensive and easy to audit.
-
-## Limitations
-
-- The dataset is synthetic and currently small.
-- Lightweight retrieval is not a production-scale search engine.
-- The validation layer uses conservative heuristics rather than a full natural-language inference model.
-- LLM judges can have bias and variance.
-- Risk detection is a conservative safety signal, not a formal guarantee.
-- Human correlation has not yet been measured on production support data.
-
-## AI tools used
-
-AI coding assistance was used during development. The author reviewed the architecture, dataset design, evaluation criteria, implementation, and integration. No private customer data is used.
-
-## Challenge alignment
-
-Replora delivers:
-
-1. A reproducible paired email/reply dataset.
-2. LLM-based suggested-response generation grounded in historical examples.
-3. Independent claim/evidence validation.
-4. Required-point and forbidden-claim checking.
-5. Contradiction and security-risk detection.
-6. Semantic quality evaluation with explicit weighted metrics.
-7. Quality and risk scores plus actionable sendability.
-8. Validator-guided bounded refinement.
-9. Leave-one-out benchmark evaluation without target leakage.
-10. Adversarial metric sanity tests.
-11. Automated tests and GitHub Actions.
-12. Documentation of approach, trade-offs, limitations and AI-tool usage.
+AI coding assistance was used during development. The implementation, evaluation design, dataset labeling decisions, and final claims must be reviewed by the author. No private customer data should be committed to this repository.
