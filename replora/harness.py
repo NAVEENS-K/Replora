@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from .baselines import majority_intent, simple_retrieval_baseline
 from .intents import intent_accuracy
+from .models import EmailExample
 
 
 def load_golden(path="data/golden_set.json"):
@@ -22,13 +23,21 @@ def split(rows, train_fraction=0.8):
     return rows[:cut], rows[cut:]
 
 
-def run_intent_baselines(rows):
+def as_examples(rows):
+    return [EmailExample(
+        id=r["id"], category=r["intent"], incoming_email=r["customer_message"],
+        reference_reply=r["reference_reply"], key_points=[], forbidden_claims=[]
+    ) for r in rows]
+
+
+def run_baselines(rows):
     train, test = split(rows)
     majority = majority_intent(train)
     trivial = [{**r, "predicted_intent": majority} for r in test]
-    simple = simple_retrieval_baseline([], []) if False else []
+    retrieval = simple_retrieval_baseline(as_examples(train), test)
     return {
         "majority_accuracy": intent_accuracy(trivial),
-        "test_size": len(test),
+        "nearest_neighbor_accuracy": intent_accuracy(retrieval),
         "train_size": len(train),
+        "test_size": len(test),
     }
