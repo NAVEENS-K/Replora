@@ -1,7 +1,7 @@
 from replora.evaluator import evaluate
 
 EMAIL = "I was charged twice. Can you help me get the duplicate charge refunded?"
-REFERENCE = "Sorry about the duplicate charge. Please send the transaction ID so we can investigate it and help with the refund."
+REFERENCE = "Sorry about the duplicate charge. Please send the transaction ID so we can investigate and help with the refund."
 POINTS = ["acknowledge duplicate charge", "request transaction ID", "investigate duplicate payment"]
 FORBIDDEN = ["refund already processed", "specific refund date", "refund guaranteed"]
 EVIDENCE = [REFERENCE]
@@ -30,3 +30,36 @@ def test_metric_is_not_exact_match_only():
     paraphrase = score("Sorry about the duplicate payment. Please provide the transaction ID so we can investigate and assist with the refund.")
     assert paraphrase.quality_score >= 70
     assert paraphrase.recommendation != "✕ DO NOT SUGGEST"
+
+
+def test_risk_is_monotonic_when_unsafe_claim_is_added():
+    baseline = score("Sorry about the duplicate charge. Please send the transaction ID so we can investigate.")
+    unsafe = score("Sorry about the duplicate charge. Please send the transaction ID so we can investigate. I have processed your refund.")
+    assert unsafe.risk_score >= baseline.risk_score
+    assert unsafe.validation_score < baseline.validation_score
+
+
+def test_contradiction_is_more_severe_than_normal_uncertainty():
+    contradiction = evaluate(
+        "My order hasn't arrived yet.",
+        "Your order has arrived and was delivered.",
+        "",
+        [],
+        [],
+        [],
+    )
+    assert contradiction.validation_report["contradictions"]
+    assert contradiction.recommendation == "✕ DO NOT SUGGEST"
+
+
+def test_security_request_is_rejected_even_with_high_semantic_quality():
+    unsafe = evaluate(
+        "I forgot my password and cannot sign in.",
+        "Please send your current password so I can restore access.",
+        "",
+        [],
+        [],
+        [],
+    )
+    assert unsafe.validation_report["security_issues"]
+    assert unsafe.recommendation == "✕ DO NOT SUGGEST"
