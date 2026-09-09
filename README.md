@@ -1,85 +1,48 @@
 # Replora
 
-**Evidence-grounded AI support agent for the Hiver SDE Intern take-home assignment.**
+**Evidence-grounded AI suggested-response system for email.**
 
-Replora is designed around the assignment's central requirement: build a support agent from the **Customer Support on Twitter** dataset and prove that it works. The system is intended to operate on one selected brand and combines intent classification, historical-resolution retrieval, LLM reply generation, independent validation, and an auto-handle/escalate decision.
+Replora takes an incoming customer email, retrieves similar historical email/reply pairs, uses an LLM to draft a suggested response, and independently evaluates how good and well-grounded that response is.
 
-## Assignment alignment
+This repository targets the **AI email suggested-response challenge**. The core deliverable is not merely generation, but a credible way to measure response quality.
 
-| Requirement | Repository component |
-|---|---|
-| Public runnable repo | This repository |
-| Customer Support on Twitter source | `data/prepare_twitter.py` + `replora/twitter_data.py` |
-| Brand-specific subset | `data/raw_brand_subset.json` generated locally |
-| Intent classification | `replora/intents.py` |
-| Historical grounded reply | `replora/retrieval.py` + `replora/generator.py` |
-| Auto-handle / escalation | `replora/decision.py` |
-| 150-250 golden examples | `scripts/build_golden_candidates.py` + `scripts/label_golden.py` |
-| Automated evaluation | `replora/evaluator.py` + `replora/validation.py` |
-| LLM-as-judge | `replora/evaluator.py` |
-| Human-vs-judge agreement | `replora/human_agreement.py` + `docs/EVALUATION_PROTOCOL.md` |
-| Baselines | `replora/baselines.py` + `scripts/run_hiver_benchmark.py` |
-| Failure analysis/report | `reports/FINAL_REPORT_TEMPLATE.md` |
-| Decision log | `docs/DECISION_LOG.md` |
-
-**Important:** the repository previously contained a small synthetic email benchmark used during prototyping. It is not presented as the Hiver golden set and must not be used as evidence of assignment performance. The assignment benchmark must be built from the real Twitter dataset.
-
-## Data source and provenance
-
-Primary source: **Customer Support on Twitter**, Kaggle dataset `thoughtvector/customer-support-on-twitter`.
-
-The source contains tweet-level records with `tweet_id`, `author_id`, `inbound`, `created_at`, `text`, `response_tweet_id`, and `in_response_to_tweet_id`. The dataset is multi-turn and conversations can be reconstructed through the response-ID links. urlKaggle dataset pagehttps://www.kaggle.com/datasets/thoughtvector/customer-support-on-twitter
-
-The full dataset is not committed to GitHub. Download it locally, inspect frequent outbound support-account authors, choose one brand, and generate a compact subset. The preparation command now reconstructs direct customer->brand response pairs rather than merely copying outbound brand tweets.
-
-```bash
-python data/prepare_twitter.py --input data/raw/twcs.csv --list-authors
-python data/prepare_twitter.py --input data/raw/twcs.csv --brand-name <BRAND> --brand-author-id <AUTHOR_ID> --output data/raw_brand_subset.json --limit 2000
-```
-
-The final report must record the selected brand, author ID, sampling rule, exclusions, and labeling protocol.
-
-## Intent classification
-
-The selected brand's training data defines the intent taxonomy. Intents are not imported from Banking77 or invented independently of the selected brand.
-
-`replora/intents.py` provides the lightweight classification path. The first implementation uses the same reproducible retrieval representation as the simple baseline. A stronger classifier can be substituted without changing the evaluation interface.
-
-The golden set must contain a hand-labelled `intent` for every example.
-
-## Response generation
-
-The intended pipeline is:
+## Approach
 
 ```text
-Customer Twitter message
-        ↓
-Intent classification
-        ↓
-Historical brand-specific retrieval
-        ↓
-Evidence bundle
-        ↓
-LLM response generation
-        ↓
-Independent validation
-        ↓
-Auto-handle / Escalate
+Incoming email
+      ↓
+Historical email/reply retrieval
+      ↓
+Relevant evidence
+      ↓
+LLM suggested reply
+      ↓
+Independent evaluator + deterministic validation
+      ↓
+Per-response quality + explanation
 ```
 
-`replora/generator.py` generates the suggested response. `replora/retrieval.py` retrieves historical examples. `replora/validation.py` checks claim support, required information, contradictions, unsupported operational commitments, forbidden claims, and credential requests.
+## 1. Dataset
 
-## Evaluation: the main deliverable
+The project owns its dataset interface and supports compact email/reply pairs. The included prototype data is synthetic and explicitly for development/demo use; it must not be described as real customer data.
 
-The assignment explicitly values proof over the system. Replora therefore separates three evaluation questions:
+The dataset format contains an incoming email, its historical reply, key points, and forbidden claims. See `data/README.md` and `data/dataset.json`.
 
-1. **Did the agent understand the customer?** — intent accuracy and macro-F1.
-2. **Did it draft a good, historically grounded reply?** — semantic reply-quality evaluation.
-3. **Did it know when not to act automatically?** — escalation precision/recall/F1.
+For a final submission, the README should identify the exact dataset source, explain its provenance, and justify why the sample is representative of the intended support workload.
 
-### Reply-quality rubric
+## 2. Generative response system
 
-The existing hybrid evaluator scores:
+`replora/generator.py` uses an LLM to draft the suggested reply. It is grounded by historical examples returned by `replora/retrieval.py`.
+
+The generator is instructed not to invent refunds, credits, account changes, delivery dates, policies, guarantees, or completed actions that are not established by the available evidence.
+
+If an API key is unavailable, a deterministic demo path keeps the repository runnable end-to-end. API-backed runs use the configured LLM provider.
+
+## 3. Measuring response quality
+
+Evaluation is the primary focus. Exact-match accuracy is inappropriate because different replies can be equally good.
+
+The hybrid evaluator scores:
 
 | Dimension | Weight |
 |---|---:|
@@ -89,57 +52,23 @@ The existing hybrid evaluator scores:
 | Groundedness | 15% |
 | Tone | 10% |
 
-Exact-match is deliberately avoided because valid support replies can use different wording. Correctness receives the largest weight because a fluent but factually incorrect support response is more harmful than an imperfectly worded correct response.
+Correctness has the highest weight because a fluent but factually incorrect support reply is more harmful than an imperfectly worded correct response.
 
-The LLM judge evaluates semantic quality, while deterministic validation independently checks explicit safety-sensitive behavior. A critical deterministic finding can override an optimistic LLM score.
+The LLM judge evaluates semantic response quality. Deterministic validation independently checks evidence support, missing required points, contradictions, unsupported operational claims, credential/secret requests, and structural problems. Critical deterministic findings cannot be overridden by an optimistic LLM score.
 
-### Golden evaluation set
+Every evaluated response exposes component scores, overall quality score, risk score, evidence coverage, missing points, unsupported claims, validation findings, and recommendation.
 
-The final assignment submission must contain **150-250 hand-labelled held-out examples** from the selected brand. The repo now provides an auditable workflow:
+### Validating the evaluator
 
-```bash
-# 1. Build an unlabeled candidate queue from the held-out portion.
-PYTHONPATH=. python scripts/build_golden_candidates.py --input data/raw/twcs.csv --brand-author-id <AUTHOR_ID> --brand-name <BRAND> --n 200
+A quality metric is only useful if it reflects human judgement. `replora/human_agreement.py` provides agreement calculations for an independently human-rated calibration sample, including Spearman correlation, mean absolute error, exact agreement, Cohen's kappa, and label agreement.
 
-# 2. Human reviews and labels every candidate.
-PYTHONPATH=. python scripts/label_golden.py --input data/golden_candidates.json --output data/golden_set.json
+Do not manufacture human ratings or agreement statistics. A final benchmark should freeze a calibration sample, have a human independently rate it, then report measured agreement and representative disagreements.
 
-# 3. Only the completed human-reviewed file is accepted by the benchmark harness.
-PYTHONPATH=. python scripts/run_hiver_benchmark.py --golden data/golden_set.json
-```
+## Dataset/evaluation separation
 
-The candidate builder is deliberately incapable of claiming that generated candidates are hand-labelled. The labeling tool records the intent taxonomy, escalation label, and 1-5 human quality rating. This separation is important for honest evaluation.
+Reference replies and gold metadata are evaluator inputs. They are not supplied to the generator as hidden truth. During leave-one-out evaluation, the target example is removed from the retrieval pool. This prevents direct target retrieval and target-label leakage.
 
-### Human agreement for the LLM judge
-
-This is mandatory for the assignment. Follow `docs/EVALUATION_PROTOCOL.md`. Freeze approximately 50-75 generated replies, have a human rate them independently, then calculate quality-score agreement and escalation-label agreement with `replora/human_agreement.py`. Report the statistic, sample size, and representative disagreements. Never manufacture agreement numbers.
-
-### Baselines
-
-The final benchmark compares Replora against at least two baselines:
-
-1. **Trivial baseline:** always predict the majority intent.
-2. **Simple baseline:** nearest historical customer message and return its historical reply, with a fixed escalation policy.
-
-`replora/baselines.py` contains the baseline implementations. `scripts/run_hiver_benchmark.py` evaluates intent accuracy, Replora macro-F1, escalation F1, and mean judged quality on the same held-out split. The target row is excluded from the retrieval pool for each Replora prediction.
-
-### Leakage control
-
-The target example is excluded from the retrieval pool when evaluating that example. Gold/reference fields are evaluator-only and are never passed to Replora's generator in the assignment benchmark. This prevents both direct target retrieval and hidden-label leakage.
-
-Interactive retrieval examples are evidence/workflow examples, not hidden truth labels.
-
-## Required report
-
-`reports/FINAL_REPORT_TEMPLATE.md` is the report structure required by the assignment. It covers:
-
-- problem framing and what was deliberately not built;
-- results against two baselines;
-- top five failure modes with real examples and hypotheses;
-- **"What is misleading about my headline number?"**;
-- what would be done with one more week.
-
-`docs/DECISION_LOG.md` contains the 10-15 non-obvious engineering decisions and their rationale.
+Synthetic development data is not presented as human-labelled evidence.
 
 ## Running
 
@@ -154,32 +83,71 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Configure the LLM API key using `.env` based on `.env.example`.
+Configure the LLM API key in `.env` using `.env.example` for an API-backed run.
 
-For the current prototype/demo path:
+Run the end-to-end demo:
 
 ```bash
 python main.py --email "I was charged twice for my subscription. Can you help?"
 ```
 
-The legacy synthetic benchmark can still be used for unit-level development, but it is **not** the final Hiver evaluation.
-
-For the assignment benchmark, complete the human golden set first and then run `scripts/run_hiver_benchmark.py`. The output is written to `results/hiver_benchmark.json`. The final report should quote only measured results from that artifact.
-
-## Testing
+Run automated tests:
 
 ```bash
 pytest -q
 ```
 
-GitHub Actions runs the automated tests on pushes and pull requests.
+Run the reusable benchmark harness with a completed email/reply evaluation set:
 
-## What is not claimed
+```bash
+PYTHONPATH=. python scripts/run_hiver_benchmark.py --golden data/golden_set.json
+```
 
-The repository does not claim that the current small synthetic prototype proves production quality. The Hiver submission score must come from the real selected-brand golden set, baseline comparison, and human-vs-LLM-judge validation described above.
+The script name is retained for compatibility with the existing harness; the project no longer claims that Twitter or Hiver-specific data is required for this challenge.
 
-The headline benchmark can still be misleading because a single brand, historical period, sampling strategy, and human-labeled set may not represent future traffic. LLM judges can also be biased. These limitations must be reported rather than hidden.
+## Final evaluation report
 
-## AI tools and reproducibility
+A final submission should include:
 
-AI coding assistance was used during development. The implementation, evaluation design, dataset labeling decisions, and final claims must be reviewed by the author. No private customer data should be committed to this repository.
+1. Dataset source and sampling rationale.
+2. Overall mean quality score.
+3. Per-dimension scores.
+4. Per-response scores and explanations.
+5. Strong and weak response examples.
+6. Human-vs-judge calibration results.
+7. Limitations and known failure cases.
+
+The headline claim should be reproducible from a clean checkout using the documented commands.
+
+## Trade-offs
+
+A lightweight lexical retrieval implementation was chosen instead of a vector database to keep the system inspectable and easy to reproduce. Embedding retrieval can be substituted later without changing the generator/evaluator contract.
+
+The system intentionally does not attempt autonomous email sending, CRM integration, fine-tuning, or production workflow automation. The scope is suggested-response generation and trustworthy measurement.
+
+## AI tools
+
+AI coding assistance was used during development. The author should review and be able to explain the implementation. Borrowed material and external datasets should be cited in the final submission.
+
+## Project structure
+
+```text
+replora/
+  retrieval.py       # historical email retrieval
+  generator.py       # LLM suggested-response generation
+  evaluator.py       # hybrid semantic evaluation
+  grounding.py       # evidence/claim analysis
+  validation.py      # deterministic safety and grounding checks
+  models.py          # shared data models
+  human_agreement.py # human-vs-judge calibration statistics
+
+data/
+  dataset.json       # compact synthetic development dataset
+
+scripts/
+  run_hiver_benchmark.py  # reusable benchmark harness
+
+tests/               # automated tests
+```
+
+See `docs/EMAIL_CHALLENGE.md` for the problem framing and evaluation philosophy.
