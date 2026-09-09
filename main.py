@@ -11,7 +11,7 @@ load_dotenv()
 
 
 def print_result(email, reply, result, retrieved):
-    decision = decide(result.quality_score, result.risk_score, result.unsupported_claims)
+    decision = decide(result.quality_score, result.risk_score, result.unsupported_claims, result.validation_report)
     print("\n" + "=" * 72)
     print("REPLORA — EVIDENCE-GROUNDED EMAIL COPILOT")
     print("=" * 72)
@@ -56,7 +56,7 @@ def benchmark(examples):
         reply = generate_reply(target.incoming_email, retrieved)
         evidence = [x.example.reference_reply for x in retrieved]
         result = evaluate(target.incoming_email, reply, target.reference_reply, target.key_points, evidence, target.forbidden_claims)
-        decision = decide(result.quality_score, result.risk_score, result.unsupported_claims)
+        decision = decide(result.quality_score, result.risk_score, result.unsupported_claims, result.validation_report)
         results.append({
             "id": target.id,
             "category": target.category,
@@ -131,8 +131,6 @@ def main():
     elif args.email:
         retrieved = retrieve(args.email, examples, top_k=3)
         reply = generate_reply(args.email, retrieved)
-        # Interactive mode has no ground-truth reference. Retrieved replies are evidence,
-        # not truth labels; benchmark-only references stay isolated from this path.
         evidence = [x.example.reference_reply for x in retrieved]
         result = evaluate(args.email, reply, "", [], evidence, [])
         print_result(args.email, reply, result, retrieved)
