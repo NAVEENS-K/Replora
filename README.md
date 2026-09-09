@@ -9,16 +9,16 @@ Replora is designed around the assignment's central requirement: build a support
 | Requirement | Repository component |
 |---|---|
 | Public runnable repo | This repository |
-| Customer Support on Twitter source | `data/prepare_twitter.py` |
+| Customer Support on Twitter source | `data/prepare_twitter.py` + `replora/twitter_data.py` |
 | Brand-specific subset | `data/raw_brand_subset.json` generated locally |
 | Intent classification | `replora/intents.py` |
 | Historical grounded reply | `replora/retrieval.py` + `replora/generator.py` |
 | Auto-handle / escalation | `replora/decision.py` |
-| 150-250 golden examples | `data/golden_set.json` to be populated from the selected brand |
+| 150-250 golden examples | `scripts/build_golden_candidates.py` + `scripts/label_golden.py` |
 | Automated evaluation | `replora/evaluator.py` + `replora/validation.py` |
 | LLM-as-judge | `replora/evaluator.py` |
-| Human-vs-judge agreement | `docs/EVALUATION_PROTOCOL.md` |
-| Baselines | `replora/baselines.py` |
+| Human-vs-judge agreement | `replora/human_agreement.py` + `docs/EVALUATION_PROTOCOL.md` |
+| Baselines | `replora/baselines.py` + `scripts/run_hiver_benchmark.py` |
 | Failure analysis/report | `reports/FINAL_REPORT_TEMPLATE.md` |
 | Decision log | `docs/DECISION_LOG.md` |
 
@@ -30,11 +30,11 @@ Primary source: **Customer Support on Twitter**, Kaggle dataset `thoughtvector/c
 
 The source contains tweet-level records with `tweet_id`, `author_id`, `inbound`, `created_at`, `text`, `response_tweet_id`, and `in_response_to_tweet_id`. The dataset is multi-turn and conversations can be reconstructed through the response-ID links. urlKaggle dataset pagehttps://www.kaggle.com/datasets/thoughtvector/customer-support-on-twitter
 
-The full dataset is not committed to GitHub. Download it locally, inspect frequent outbound support-account authors, choose one brand, and generate a compact subset.
+The full dataset is not committed to GitHub. Download it locally, inspect frequent outbound support-account authors, choose one brand, and generate a compact subset. The preparation command now reconstructs direct customer->brand response pairs rather than merely copying outbound brand tweets.
 
 ```bash
 python data/prepare_twitter.py --input data/raw/twcs.csv --list-authors
-python data/prepare_twitter.py --input data/raw/twcs.csv --brand-name <BRAND> --brand-author-id <AUTHOR_ID> --output data/raw_brand_subset.json
+python data/prepare_twitter.py --input data/raw/twcs.csv --brand-name <BRAND> --brand-author-id <AUTHOR_ID> --output data/raw_brand_subset.json --limit 2000
 ```
 
 The final report must record the selected brand, author ID, sampling rule, exclusions, and labeling protocol.
@@ -73,7 +73,7 @@ Auto-handle / Escalate
 
 The assignment explicitly values proof over the system. Replora therefore separates three evaluation questions:
 
-1. **Did the agent understand the customer?** — intent accuracy.
+1. **Did the agent understand the customer?** — intent accuracy and macro-F1.
 2. **Did it draft a good, historically grounded reply?** — semantic reply-quality evaluation.
 3. **Did it know when not to act automatically?** — escalation precision/recall/F1.
 
@@ -95,43 +95,37 @@ The LLM judge evaluates semantic quality, while deterministic validation indepen
 
 ### Golden evaluation set
 
-The final assignment submission must contain **150-250 hand-labelled held-out examples** from the selected brand.
+The final assignment submission must contain **150-250 hand-labelled held-out examples** from the selected brand. The repo now provides an auditable workflow:
 
-Required fields are represented by `data/golden_set_template.json`:
+```bash
+# 1. Build an unlabeled candidate queue from the held-out portion.
+PYTHONPATH=. python scripts/build_golden_candidates.py --input data/raw/twcs.csv --brand-author-id <AUTHOR_ID> --brand-name <BRAND> --n 200
 
-- customer message;
-- intent;
-- expected/reference resolution or reply;
-- escalation requirement;
-- human quality rating for the judge-calibration subset;
-- human escalation label.
+# 2. Human reviews and labels every candidate.
+PYTHONPATH=. python scripts/label_golden.py --input data/golden_candidates.json --output data/golden_set.json
 
-Do not claim human agreement until the human-rating subset has actually been labelled.
+# 3. Only the completed human-reviewed file is accepted by the benchmark harness.
+PYTHONPATH=. python scripts/run_hiver_benchmark.py --golden data/golden_set.json
+```
+
+The candidate builder is deliberately incapable of claiming that generated candidates are hand-labelled. The labeling tool records the intent taxonomy, escalation label, and 1-5 human quality rating. This separation is important for honest evaluation.
 
 ### Human agreement for the LLM judge
 
-This is mandatory for the assignment. Follow `docs/EVALUATION_PROTOCOL.md`:
-
-- freeze a human-rated subset of approximately 50-75 generated replies;
-- rate reply quality independently from the LLM judge;
-- compare human and judge quality scores using an appropriate correlation/agreement statistic;
-- compare human and judge escalation labels using agreement/F1;
-- inspect disagreements and report examples.
+This is mandatory for the assignment. Follow `docs/EVALUATION_PROTOCOL.md`. Freeze approximately 50-75 generated replies, have a human rate them independently, then calculate quality-score agreement and escalation-label agreement with `replora/human_agreement.py`. Report the statistic, sample size, and representative disagreements. Never manufacture agreement numbers.
 
 ### Baselines
 
-The final benchmark must compare Replora against at least two baselines:
+The final benchmark compares Replora against at least two baselines:
 
 1. **Trivial baseline:** always predict the majority intent.
 2. **Simple baseline:** nearest historical customer message and return its historical reply, with a fixed escalation policy.
 
-The baseline implementation is in `replora/baselines.py`.
-
-All systems must be evaluated on the same held-out golden set.
+`replora/baselines.py` contains the baseline implementations. `scripts/run_hiver_benchmark.py` evaluates intent accuracy, Replora macro-F1, escalation F1, and mean judged quality on the same held-out split. The target row is excluded from the retrieval pool for each Replora prediction.
 
 ### Leakage control
 
-The target example must be excluded from the retrieval pool when evaluating that example. This prevents the model from retrieving its own reference reply.
+The target example is excluded from the retrieval pool when evaluating that example. Gold/reference fields are evaluator-only and are never passed to Replora's generator in the assignment benchmark. This prevents both direct target retrieval and hidden-label leakage.
 
 Interactive retrieval examples are evidence/workflow examples, not hidden truth labels.
 
@@ -170,7 +164,7 @@ python main.py --email "I was charged twice for my subscription. Can you help?"
 
 The legacy synthetic benchmark can still be used for unit-level development, but it is **not** the final Hiver evaluation.
 
-The assignment-specific golden benchmark should be run after `data/golden_set.json` has been created from the selected Twitter brand. The final benchmark command and headline-result artifact should then be recorded in the report so a reviewer can reproduce the result in under 15 minutes on the committed subsample.
+For the assignment benchmark, complete the human golden set first and then run `scripts/run_hiver_benchmark.py`. The output is written to `results/hiver_benchmark.json`. The final report should quote only measured results from that artifact.
 
 ## Testing
 
