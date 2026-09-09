@@ -51,23 +51,29 @@ def _llm_generate(email: str, examples: list[RetrievedExample], repair: str = ""
     return response.choices[0].message.content.strip()
 
 
-def generate_reply(email: str, examples: list[RetrievedExample]) -> str:
+def generate_reply(email: str, examples: list[RetrievedExample], forbidden_claims: list[str] | None = None) -> str:
+    """Generate once, then optionally perform one validator-guided repair pass.
+
+    Forbidden constraints are used only by the benchmark/refinement path and
+    are not included in the normal generation prompt, preventing leakage.
+    """
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         return _demo_reply(email)
     try:
         reply = _llm_generate(email, examples)
         evidence = [x.example.reference_reply for x in examples]
-        report = validate_reply(reply, email, evidence)
+        report = validate_reply(reply, email, evidence, [], forbidden_claims or [])
         risky = [c for c in report.claims if c.risk in {"HIGH", "CRITICAL"}]
-        if risky or report.contradictions or report.security_issues:
+        if risky or report.contradictions or report.security_issues or report.forbidden_claims:
             feedback = "\n".join(
                 [f"- {c.status}: {c.claim} ({c.evidence})" for c in risky]
+                + [f"- FORBIDDEN: {x}" for x in report.forbidden_claims]
                 + [f"- CONTRADICTION: {x}" for x in report.contradictions]
                 + [f"- SECURITY: {x}" for x in report.security_issues]
             )
             repaired = _llm_generate(email, examples, feedback)
-            second = validate_reply(repaired, email, evidence)
+            second = validate_reply(repaired, email, evidence, [], forbidden_claims or [])
             if second.validation_score >= report.validation_score or (report.critical and not second.critical):
                 return repaired
         return reply
