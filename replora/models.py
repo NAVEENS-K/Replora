@@ -46,6 +46,8 @@ class EvaluationResult:
     evidence_coverage: int
     evidence_total: int
     claim_checks: list[ClaimCheck] = field(default_factory=list)
+    validation_score: float = 100.0
+    validation_report: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = self.__dict__.copy()
