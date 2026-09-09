@@ -9,12 +9,24 @@ class EmailExample:
     incoming_email: str
     reference_reply: str
     key_points: list[str] = field(default_factory=list)
+    forbidden_claims: list[str] = field(default_factory=list)
 
 
 @dataclass
 class RetrievedExample:
     example: EmailExample
     score: float
+
+
+@dataclass
+class ClaimCheck:
+    claim: str
+    status: str
+    evidence: str
+    risk: str
+
+    def to_dict(self) -> dict[str, str]:
+        return self.__dict__.copy()
 
 
 @dataclass
@@ -33,6 +45,9 @@ class EvaluationResult:
     recommendation: str
     evidence_coverage: int
     evidence_total: int
+    claim_checks: list[ClaimCheck] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return self.__dict__.copy()
+        data = self.__dict__.copy()
+        data["claim_checks"] = [x.to_dict() for x in self.claim_checks]
+        return data
