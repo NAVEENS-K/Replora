@@ -1,0 +1,6 @@
+{
+  "dataset_name": "Replora synthetic conversation sandbox",
+  "purpose": "Development and evaluator smoke tests only. Not the Hiver golden set and not evidence of benchmark performance.",
+  "labeling_note": "These conversations are generated examples designed to exercise the pipeline. They must never be described as hand-labelled real Twitter conversations.",
+  "rows": []
+}
