@@ -68,7 +68,7 @@ def generate_reply(email: str, examples: list[RetrievedExample]) -> str:
             )
             repaired = _llm_generate(email, examples, feedback)
             second = validate_reply(repaired, email, evidence)
-            if second.validation_score >= report.validation_score or not (second.contradictions or second.security_issues):
+            if second.validation_score >= report.validation_score or (report.critical and not second.critical):
                 return repaired
         return reply
     except Exception:
