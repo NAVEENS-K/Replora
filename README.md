@@ -1,8 +1,8 @@
 # Replora
 
-**Evidence-grounded AI email suggestions with measurable quality and risk.**
+**Evidence-grounded AI email suggestions with measurable quality, trust, and risk.**
 
-Replora is an AI email copilot prototype for customer-support teams. It retrieves similar historical conversations, generates a suggested reply with an LLM, and then independently evaluates the reply for relevance, correctness, completeness, tone, and groundedness. Its differentiating feature is claim-level evidence checking: Replora identifies unsupported claims and converts them into an actionable risk signal before a human agent uses the suggestion.
+Replora is an AI email copilot prototype for customer-support teams. It retrieves similar historical conversations, generates a suggested reply with an LLM, and then evaluates whether that reply is useful and trustworthy. Its differentiating feature is claim-level evidence checking: Replora identifies unsupported claims and converts them into an actionable risk and sendability signal before a human agent uses the suggestion.
 
 ## Product idea
 
@@ -50,7 +50,7 @@ SUGGEST
 
 Replora deliberately avoids exact-match accuracy. Two good support replies can use different wording while solving the same customer problem.
 
-The Reply Quality Score is a weighted semantic evaluation:
+The Reply Quality Score is a weighted evaluation:
 
 | Dimension | Weight | Question |
 |---|---:|---|
@@ -61,6 +61,8 @@ The Reply Quality Score is a weighted semantic evaluation:
 | Tone | 10% | Is it appropriate for customer support? |
 
 The weights prioritize correctness because a polished but incorrect support answer is worse than a less polished correct answer.
+
+Replora uses a **hybrid evaluator**: an LLM provides semantic judgments for quality dimensions, while deterministic claim verification is authoritative for safety-sensitive grounding. This gives semantic flexibility without allowing an LLM judge to excuse an unsupported operational claim simply because it sounds plausible.
 
 ## Novelty: Claim & Evidence Verification
 
@@ -77,34 +79,28 @@ Customer:
 Generated:
 "I have processed your refund. You will receive it tomorrow."
 
-Claim 1: refund request exists
-✓ Supported
-
-Claim 2: refund was processed
+Claim 1: refund was processed
 ✗ Unsupported — HIGH RISK
 
-Claim 3: refund arrives tomorrow
+Claim 2: refund arrives tomorrow
 ✗ Unsupported — HIGH RISK
 ```
 
-This produces two distinct signals:
-
-- **Quality Score:** how useful the response is.
-- **Risk Score:** how much unsupported or overconfident content it contains.
+Each claim is classified as Supported, Partially supported, Unsupported, or Unverified. The CLI exposes the claim status and evidence reason so the result is inspectable rather than an opaque score.
 
 ## Sendability decision
 
 Replora turns the scores into an actionable recommendation:
 
 ```text
-Quality >= 80 and Risk <= 20
+High-risk unsupported claim OR risk >= 50
+→ DO NOT SUGGEST
+
+Quality >= 80 AND risk <= 20 AND no unsupported claims
 → SAFE TO SUGGEST
 
-Quality < 75 or Risk > 20
+Otherwise
 → NEEDS REVIEW
-
-Risk >= 50 or multiple unsupported commitments
-→ DO NOT SUGGEST
 ```
 
 These are challenge-time thresholds, not claims of production safety. A human agent remains responsible for the final response.
@@ -118,25 +114,37 @@ Each example contains:
 - incoming email
 - reference reply
 - category
-- structured key points
+- required key points
+- forbidden claims
+
+Forbidden claims are used by the evaluator as explicit benchmark constraints. They are **not** given to the generator, avoiding leakage of the expected failure cases.
 
 The benchmark uses **leave-one-out evaluation**: for each target email, that exact example is removed from the retrieval pool before generating the response. Therefore the generator cannot retrieve its own reference reply.
 
-This is not claimed to be representative of Hiver's production traffic. Synthetic data makes the benchmark reproducible and avoids exposing private customer information. A production system should validate the evaluator against a larger, human-labeled support dataset.
+This is not claimed to be representative of Hiver's production traffic. Synthetic data makes the benchmark reproducible and avoids exposing private customer information. A production system should calibrate the evaluator against a larger, human-labeled support dataset.
 
 ## Metric validation
 
-The test suite includes intentionally strong and hallucinated responses and checks that the evaluator behaves in the expected direction:
+The project includes adversarial sanity tests in `tests/test_metric_sanity.py`. They deliberately compare a strong response, a paraphrased strong response, a correct-but-incomplete response, and a polished response containing unsupported refund/delivery claims.
+
+The expected behavior is directional rather than exact:
 
 ```text
-Strong / grounded reply
-        >
-Hallucinated / unsupported reply
+Strong + grounded
+      >
+Correct but incomplete
+      >
+Unsupported / hallucinated
 ```
 
-The grounding tests separately verify that unsupported operational commitments are detected.
+The tests verify that:
 
-This is a **sanity check**, not proof that an automated evaluator perfectly matches human judgment. In production, we would calibrate the metric against human labels and monitor disagreement between human reviewers and the evaluator.
+- good grounded replies receive better quality and lower risk than hallucinated replies;
+- missing required information reduces completeness;
+- paraphrasing is not treated as failure merely because wording differs;
+- unsupported operational claims trigger the conservative sendability policy.
+
+This is **metric sanity validation**, not proof of human correlation. In production, the next validation step would be human-labeled evaluation: compare human quality/safety ratings with Replora scores, measure agreement, inspect disagreements, and recalibrate thresholds.
 
 ## Project structure
 
@@ -158,7 +166,8 @@ Replora/
 │   ├── test_retrieval.py
 │   ├── test_evaluator.py
 │   ├── test_grounding.py
-│   └── test_decision.py
+│   ├── test_decision.py
+│   └── test_metric_sanity.py
 ├── results/
 │   └── evaluation.json
 ├── main.py
@@ -191,7 +200,7 @@ Generate and evaluate a reply:
 python main.py --email "I was charged twice for my subscription. Can you refund one of the charges?"
 ```
 
-Run the benchmark:
+Run the leave-one-out benchmark:
 
 ```bash
 python main.py --evaluate
@@ -217,15 +226,15 @@ The benchmark is small. Local retrieval keeps the challenge reproducible and avo
 
 ### Hybrid evaluation
 
-Replora combines deterministic grounding/risk checks with semantic LLM evaluation. This avoids making the entire quality decision depend on one opaque number while retaining semantic judgment for dimensions such as relevance and tone.
+Replora combines deterministic grounding/risk checks with semantic LLM evaluation. This avoids making the entire quality decision depend on one opaque number while retaining semantic judgment for dimensions such as correctness, relevance, and tone.
 
 ## Limitations
 
 - The dataset is synthetic and small.
 - The lightweight retrieval method is not a production-scale search engine.
 - LLM judges can have bias and variance.
-- Claim grounding uses heuristic matching in the challenge implementation and should be replaced or calibrated with stronger evidence attribution in production.
-- Risk detection is a safety signal, not a formal guarantee.
+- Claim grounding uses heuristic matching in the challenge implementation and should be calibrated with stronger evidence attribution in production.
+- Risk detection is a conservative safety signal, not a formal guarantee.
 
 ## AI tools used
 
@@ -241,5 +250,6 @@ Replora delivers:
 4. Claim-level evidence and unsupported-claim detection.
 5. Quality and risk scores plus an actionable sendability decision.
 6. A leave-one-out benchmark and overall system score.
-7. Tests validating retrieval, grounding, scoring, and decision behavior.
-8. Documentation of approach, metric design, trade-offs, limitations, and AI-tool usage.
+7. Adversarial metric sanity validation.
+8. Tests for retrieval, grounding, scoring, and decision behavior.
+9. Documentation of approach, metric design, trade-offs, limitations, and AI-tool usage.
