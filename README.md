@@ -2,73 +2,96 @@
 
 **Evidence-grounded AI email suggestions with measurable quality, trust, and risk.**
 
-Replora is an AI email copilot prototype for customer-support teams. It retrieves similar historical conversations, generates a suggested reply with an LLM, and then evaluates whether that reply is useful and trustworthy. Its differentiating feature is claim-level evidence checking: Replora identifies unsupported claims and converts them into an actionable risk and sendability signal before a human agent uses the suggestion.
+Replora is an AI email copilot prototype for customer-support teams. It retrieves similar historical conversations, generates a suggested reply with an LLM, independently validates the reply, evaluates semantic quality, and converts the findings into a risk-aware sendability decision.
 
-## Product idea
+The central design principle is simple: **an LLM may generate a reply and help judge semantic quality, but it does not have final authority over safety-sensitive claims.**
 
-Fluent text is not the same as a good support reply. A response can sound professional while inventing a refund, promising a delivery date, or claiming an account action happened. Replora separates **generation** from **verification**.
+## Why Replora
 
-The product answers two questions:
+A fluent support reply can still be dangerous. It may invent a refund, promise a delivery date, claim an account action happened, contradict the customer's state, or request a secret. Replora separates generation from verification.
+
+It answers two questions:
 
 1. **How good is this suggested reply?**
-2. **Is there anything risky or unsupported that an agent should catch before sending it?**
+2. **Is there evidence that the reply is safe enough for an agent to use?**
 
 ## Architecture
 
 ```text
-Incoming email
+Customer email
       |
       v
-Historical retrieval
+Intent-aware retrieval
       |
       v
-Relevant examples + email
+Evidence bundle
       |
       v
-LLM response generator
+LLM generator
       |
       v
-Suggested reply
+Generated reply
       |
-      +-------------------------+
-      |                         |
-      v                         v
-Quality evaluator       Claim/evidence checker
-      |                         |
-      +------------+------------+
-                   v
-            Quality + Risk
-                   |
-                   v
-             Sendability
-       /          |           \
-SAFE TO      NEEDS REVIEW   DO NOT SUGGEST
+      +-----------------------------+
+      |                             |
+      v                             v
+Independent validation         LLM evaluator
+      |                             |
+  +---+---+---+---+---+       Semantic quality
+  |   |   |   |   |             judgment
+Claims Required Forbidden Contradiction Security
+  |   |   |   |   |
+  +---+---+---+---+
+          |
+          v
+    Validation report
+          |
+          +----------------+
+          |                |
+          v                v
+      Quality           Risk engine
+          |                |
+          +-------+--------+
+                  v
+            Sendability
+       /         |          \
+SAFE TO     NEEDS REVIEW   DO NOT SUGGEST
 SUGGEST
 ```
+
+If the first LLM reply contains a high-risk issue, Replora can perform one validator-guided refinement pass and validate the revised response again. This is deliberately bounded to avoid an uncontrolled agent loop.
 
 ## Evaluation model
 
 Replora deliberately avoids exact-match accuracy. Two good support replies can use different wording while solving the same customer problem.
 
-The Reply Quality Score is a weighted evaluation:
+The Reply Quality Score is weighted as follows:
 
 | Dimension | Weight | Question |
 |---|---:|---|
 | Correctness | 30% | Does the response preserve the correct facts and intent? |
 | Relevance | 25% | Does it address what the customer actually asked? |
-| Completeness | 20% | Does it cover the important required points? |
-| Groundedness | 15% | Are its claims supported by available evidence? |
+| Completeness | 20% | Does it cover important required points? |
+| Groundedness | 15% | Are claims supported by available evidence? |
 | Tone | 10% | Is it appropriate for customer support? |
 
-The weights prioritize correctness because a polished but incorrect support answer is worse than a less polished correct answer.
+Correctness has the largest weight because a polished but incorrect support answer is worse than a less polished correct answer.
 
-Replora uses a **hybrid evaluator**: an LLM provides semantic judgments for quality dimensions, while deterministic claim verification is authoritative for safety-sensitive grounding. This gives semantic flexibility without allowing an LLM judge to excuse an unsupported operational claim simply because it sounds plausible.
+Replora uses a **hybrid evaluator**. The LLM judges semantic dimensions such as correctness, relevance, completeness and tone. The deterministic validation layer independently checks safety-sensitive claims. Deterministic findings can lower groundedness and risk can override a favorable LLM judgment.
 
-## Novelty: Claim & Evidence Verification
+## Independent validation layer
 
-The key differentiator is that Replora does not stop at an LLM-generated quality score.
+`replora/validation.py` is a separate safety-oriented layer. It checks:
 
-It breaks the generated response into claims and checks those claims against the customer email and retrieved historical evidence. Operational commitments receive special scrutiny.
+- claim-level evidence support;
+- required-point coverage;
+- forbidden-claim violations;
+- contradictions with explicit customer state;
+- credential and secret requests;
+- unsupported operational commitments;
+- basic structural problems.
+
+Claims receive statuses such as **Supported**, **Partially supported**, **Unsupported**, and **Unverified**. Critical findings include contradictions, forbidden claims and security issues.
 
 Example:
 
@@ -80,23 +103,28 @@ Generated:
 "I have processed your refund. You will receive it tomorrow."
 
 Claim 1: refund was processed
-✗ Unsupported — HIGH RISK
+✗ Unsupported — HIGH/CRITICAL RISK
 
 Claim 2: refund arrives tomorrow
-✗ Unsupported — HIGH RISK
+✗ Unsupported — HIGH/CRITICAL RISK
+
+Decision: DO NOT SUGGEST
 ```
 
-Each claim is classified as Supported, Partially supported, Unsupported, or Unverified. The CLI exposes the claim status and evidence reason so the result is inspectable rather than an opaque score.
+A contradiction is treated separately from ordinary lack of evidence. For example, a customer saying an order has not arrived and a generated reply saying it has arrived is a critical validation finding.
 
-## Sendability decision
-
-Replora turns the scores into an actionable recommendation:
+## Sendability
 
 ```text
-High-risk unsupported claim OR risk >= 50
+Critical validation finding
+OR risk >= 50
+OR multiple unsupported claims
 → DO NOT SUGGEST
 
-Quality >= 80 AND risk <= 20 AND no unsupported claims
+Quality >= 80
+AND risk <= 20
+AND no unsupported claims
+AND validation >= 80
 → SAFE TO SUGGEST
 
 Otherwise
@@ -107,44 +135,64 @@ These are challenge-time thresholds, not claims of production safety. A human ag
 
 ## Dataset
 
-The included dataset is intentionally synthetic and hand-authored for this challenge. It covers common support intents including billing, refunds, cancellation, account access, technical issues, features, shipping, upgrades, invoices, and integrations.
+The checked-in dataset is synthetic and hand-authored for this challenge. It covers billing, refunds, cancellation, account access, 2FA, technical issues, features, shipping, upgrades, invoices, and integrations.
 
 Each example contains:
 
-- incoming email
-- reference reply
-- category
-- required key points
-- forbidden claims
+- incoming email;
+- reference reply;
+- category;
+- required key points;
+- forbidden claims.
 
-Forbidden claims are used by the evaluator as explicit benchmark constraints. They are **not** given to the generator, avoiding leakage of the expected failure cases.
+Forbidden claims are evaluation constraints and are not supplied to the generator, preventing direct leakage of the expected failure cases.
 
-The benchmark uses **leave-one-out evaluation**: for each target email, that exact example is removed from the retrieval pool before generating the response. Therefore the generator cannot retrieve its own reference reply.
+The benchmark uses **leave-one-out evaluation**. For every target, the exact target example is removed from the retrieval pool before generation, so the generator cannot retrieve its own reference answer.
 
-This is not claimed to be representative of Hiver's production traffic. Synthetic data makes the benchmark reproducible and avoids exposing private customer information. A production system should calibrate the evaluator against a larger, human-labeled support dataset.
+The dataset is intentionally not presented as representative of Hiver production traffic. Synthetic data makes the benchmark reproducible and avoids private customer data. A production system should calibrate the evaluator on a substantially larger human-labeled support dataset.
 
 ## Metric validation
 
-The project includes adversarial sanity tests in `tests/test_metric_sanity.py`. They deliberately compare a strong response, a paraphrased strong response, a correct-but-incomplete response, and a polished response containing unsupported refund/delivery claims.
+Replora does not assume that a metric is trustworthy merely because it produces a plausible number. `tests/test_metric_sanity.py` checks directional properties of the evaluator.
 
-The expected behavior is directional rather than exact:
+The suite tests that:
+
+- a grounded response scores better and has lower risk than a hallucinated response;
+- missing required information reduces completeness;
+- paraphrases are not rejected just because wording differs;
+- unsupported operational claims trigger conservative decisions;
+- validation detects security-sensitive requests and contradictions.
+
+The intended ranking is:
 
 ```text
 Strong + grounded
       >
 Correct but incomplete
       >
+Vague / weakly supported
+      >
 Unsupported / hallucinated
+      >
+Contradictory / unsafe
 ```
 
-The tests verify that:
+This is **metric sanity validation**, not proof of human correlation. The next production validation step would be a human-labeled dataset: compare human quality/safety ratings with Replora scores, inspect disagreements, measure agreement, and calibrate thresholds.
 
-- good grounded replies receive better quality and lower risk than hallucinated replies;
-- missing required information reduces completeness;
-- paraphrasing is not treated as failure merely because wording differs;
-- unsupported operational claims trigger the conservative sendability policy.
+## Benchmark outputs
 
-This is **metric sanity validation**, not proof of human correlation. In production, the next validation step would be human-labeled evaluation: compare human quality/safety ratings with Replora scores, measure agreement, inspect disagreements, and recalibrate thresholds.
+`python main.py --evaluate` reports:
+
+- average quality score;
+- average risk score;
+- average validation score;
+- evidence coverage;
+- correctness, relevance, completeness, groundedness and tone;
+- high-risk replies;
+- contradictions and security issues;
+- SAFE / REVIEW / DO NOT SUGGEST counts.
+
+The detailed per-case report is written to `results/evaluation.json`.
 
 ## Project structure
 
@@ -160,12 +208,14 @@ Replora/
 │   ├── generator.py
 │   ├── evaluator.py
 │   ├── grounding.py
+│   ├── validation.py
 │   ├── decision.py
 │   └── pipeline.py
 ├── tests/
 │   ├── test_retrieval.py
 │   ├── test_evaluator.py
 │   ├── test_grounding.py
+│   ├── test_validation.py
 │   ├── test_decision.py
 │   └── test_metric_sanity.py
 ├── results/
@@ -194,7 +244,7 @@ Copy `.env.example` to `.env` and add your LLM API key.
 
 ## Usage
 
-Generate and evaluate a reply:
+Generate and validate a reply:
 
 ```bash
 python main.py --email "I was charged twice for my subscription. Can you refund one of the charges?"
@@ -212,29 +262,34 @@ Run tests:
 pytest
 ```
 
-Without an API key, Replora uses a deterministic local demo generator so retrieval, grounding, scoring, and sendability can still be demonstrated. Configure an LLM provider for the actual Gen-AI generation required by the challenge.
+Without an API key, Replora uses a deterministic local demo generator so retrieval, validation, grounding, scoring and sendability can still be demonstrated. Configure an LLM provider for the actual LLM generation required by the challenge.
 
 ## Trade-offs
 
 ### Retrieval instead of fine-tuning
 
-Retrieval plus few-shot prompting is faster to implement, easier to inspect, and lets new historical examples be added without retraining. Fine-tuning may improve consistency at scale but adds training and deployment complexity.
+Retrieval plus few-shot prompting is faster to implement, easier to inspect, and lets new examples be added without retraining. Fine-tuning may improve consistency at scale but adds training and deployment complexity.
 
-### Local retrieval instead of a vector database
+### Lightweight retrieval instead of a vector database
 
-The benchmark is small. Local retrieval keeps the challenge reproducible and avoids infrastructure that does not improve the core evaluation idea.
+The benchmark is small. Local weighted lexical retrieval keeps the challenge reproducible and avoids infrastructure that does not directly improve the evaluation idea.
 
-### Hybrid evaluation
+### Deterministic validation plus LLM evaluation
 
-Replora combines deterministic grounding/risk checks with semantic LLM evaluation. This avoids making the entire quality decision depend on one opaque number while retaining semantic judgment for dimensions such as correctness, relevance, and tone.
+Rules are strong for explicit safety constraints and operational claims but weak at nuanced semantics. The LLM is stronger at semantic judgment but can be biased or overconfident. Replora therefore uses each where it is strongest and lets deterministic critical findings override optimistic semantic scoring.
+
+### One bounded refinement pass
+
+A validator-guided second generation can repair an unsafe suggestion. The loop is intentionally limited to one retry so the system remains predictable, inexpensive and easy to audit.
 
 ## Limitations
 
-- The dataset is synthetic and small.
-- The lightweight retrieval method is not a production-scale search engine.
+- The dataset is synthetic and currently small.
+- Lightweight retrieval is not a production-scale search engine.
+- The validation layer uses conservative heuristics rather than a full natural-language inference model.
 - LLM judges can have bias and variance.
-- Claim grounding uses heuristic matching in the challenge implementation and should be calibrated with stronger evidence attribution in production.
 - Risk detection is a conservative safety signal, not a formal guarantee.
+- Human correlation has not yet been measured on production support data.
 
 ## AI tools used
 
@@ -246,10 +301,13 @@ Replora delivers:
 
 1. A reproducible paired email/reply dataset.
 2. LLM-based suggested-response generation grounded in historical examples.
-3. Per-response quality signals with explanations.
-4. Claim-level evidence and unsupported-claim detection.
-5. Quality and risk scores plus an actionable sendability decision.
-6. A leave-one-out benchmark and overall system score.
-7. Adversarial metric sanity validation.
-8. Tests for retrieval, grounding, scoring, and decision behavior.
-9. Documentation of approach, metric design, trade-offs, limitations, and AI-tool usage.
+3. Independent claim/evidence validation.
+4. Required-point and forbidden-claim checking.
+5. Contradiction and security-risk detection.
+6. Semantic quality evaluation with explicit weighted metrics.
+7. Quality and risk scores plus actionable sendability.
+8. Validator-guided bounded refinement.
+9. Leave-one-out benchmark evaluation without target leakage.
+10. Adversarial metric sanity tests.
+11. Automated tests and GitHub Actions.
+12. Documentation of approach, trade-offs, limitations and AI-tool usage.
