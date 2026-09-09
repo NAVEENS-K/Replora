@@ -113,6 +113,12 @@ Decision: DO NOT SUGGEST
 
 A contradiction is treated separately from ordinary lack of evidence. For example, a customer saying an order has not arrived and a generated reply saying it has arrived is a critical validation finding.
 
+## Bounded self-correction
+
+When the first generated reply fails a high-risk validation check, Replora can make one additional generation call using the validator's findings as repair feedback. The initial generator prompt does not contain benchmark forbidden-claim labels; these constraints are applied only after generation. This prevents the benchmark from simply telling the model which negative cases to avoid while still allowing a controlled correction step.
+
+The repaired response is accepted only when validation improves or a critical finding is removed.
+
 ## Sendability
 
 ```text
@@ -145,9 +151,11 @@ Each example contains:
 - required key points;
 - forbidden claims.
 
-Forbidden claims are evaluation constraints and are not supplied to the generator, preventing direct leakage of the expected failure cases.
+Forbidden claims are evaluation constraints. They are not included in the initial generation prompt; during benchmark refinement they are supplied only to the post-generation validator so unsafe output can be repaired.
 
 The benchmark uses **leave-one-out evaluation**. For every target, the exact target example is removed from the retrieval pool before generation, so the generator cannot retrieve its own reference answer.
+
+Interactive mode has no ground-truth reference. Retrieved replies are treated as evidence/workflow examples, not as truth labels. Reference replies are used as benchmark ground truth only.
 
 The dataset is intentionally not presented as representative of Hiver production traffic. Synthetic data makes the benchmark reproducible and avoids private customer data. A production system should calibrate the evaluator on a substantially larger human-labeled support dataset.
 
@@ -160,8 +168,9 @@ The suite tests that:
 - a grounded response scores better and has lower risk than a hallucinated response;
 - missing required information reduces completeness;
 - paraphrases are not rejected just because wording differs;
-- unsupported operational claims trigger conservative decisions;
-- validation detects security-sensitive requests and contradictions.
+- adding an unsafe claim cannot improve the risk score;
+- contradictions trigger a conservative decision;
+- credential/secret requests are rejected.
 
 The intended ranking is:
 
