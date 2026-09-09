@@ -1,22 +1,13 @@
 """Prepare a compact brand-specific subset from Customer Support on Twitter.
 
-The source CSV is tweet-level and does not reliably expose a human-readable brand
-column. Select a support-account author_id after inspecting frequent outbound authors.
-
-Examples:
-    python data/prepare_twitter.py --input data/raw/twcs.csv --list-authors
-    python data/prepare_twitter.py --input data/raw/twcs.csv --brand-name AppleSupport --brand-author-id <ID>
+The source is tweet-level, so this command now exports direct customer -> brand
+reply pairs rather than an outbound-only slice. The raw dataset is never committed.
 """
 import argparse
-import csv
 import json
-from collections import Counter
 from pathlib import Path
 
-
-def rows(path):
-    with open(path, newline="", encoding="utf-8", errors="replace") as f:
-        yield from csv.DictReader(f)
+from replora.twitter_data import frequent_brand_authors, reconstruct_pairs
 
 
 def main():
@@ -29,48 +20,37 @@ def main():
     p.add_argument("--list-authors", action="store_true")
     args = p.parse_args()
 
-    iterator = rows(args.input)
-    first = next(iterator, None)
-    if first is None:
-        raise SystemExit("Input dataset is empty")
-
     if args.list_authors:
-        counts = Counter()
-        for row in iterator:
-            if str(row.get("inbound", "")).lower() in {"false", "0", "no"}:
-                author = row.get("author_id", "").strip()
-                if author:
-                    counts[author] += 1
-        for author, count in counts.most_common(50):
+        for author, count in frequent_brand_authors(args.input, 50):
             print(f"{author}\t{count}")
         return
 
     if not args.brand_author_id or not args.brand_name:
         raise SystemExit("Provide both --brand-name and --brand-author-id; use --list-authors first.")
 
-    selected = []
-    for row in [first, *iterator]:
-        if len(selected) >= args.limit:
-            break
-        if row.get("author_id", "").strip() != args.brand_author_id:
-            continue
-        text = row.get("text", "").strip()
-        if not text:
-            continue
-        selected.append({
-            "tweet_id": row.get("tweet_id", ""),
-            "author_id": row.get("author_id", ""),
-            "inbound": row.get("inbound", ""),
-            "created_at": row.get("created_at", ""),
-            "text": text,
-            "response_tweet_id": row.get("response_tweet_id", ""),
-            "in_response_to_tweet_id": row.get("in_response_to_tweet_id", ""),
+    pairs = reconstruct_pairs(args.input, args.brand_author_id, args.limit)
+    rows = []
+    for pair in pairs:
+        rows.append({
+            "tweet_id": pair.customer_tweet.tweet_id,
+            "brand_reply_tweet_id": pair.brand_reply.tweet_id,
+            "customer_author_id": pair.customer_tweet.author_id,
+            "brand_author_id": pair.brand_reply.author_id,
+            "created_at": pair.customer_tweet.created_at,
+            "customer_message": pair.customer_tweet.text,
+            "historical_brand_reply": pair.brand_reply.text,
+            "conversation_context": [t.text for t in pair.context],
         })
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps({"brand": args.brand_name, "author_id": args.brand_author_id, "rows": selected}, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"Selected {len(selected)} rows for {args.brand_name}; wrote {output}")
+    output.write_text(json.dumps({
+        "brand": args.brand_name,
+        "brand_author_id": args.brand_author_id,
+        "pair_count": len(rows),
+        "rows": rows,
+    }, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"Reconstructed {len(rows)} customer->brand pairs for {args.brand_name}; wrote {output}")
 
 
 if __name__ == "__main__":
