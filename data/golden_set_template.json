@@ -1,0 +1,14 @@
+{
+  "schema": {
+    "id": "string",
+    "brand": "string",
+    "customer_message": "string",
+    "intent": "one of the intents discovered from the selected brand",
+    "reference_resolution": "historical resolution or gold answer",
+    "reference_reply": "gold/reference reply",
+    "escalation_required": "boolean",
+    "human_reply_quality": "1-5",
+    "human_escalation_label": "auto-handle|escalate"
+  },
+  "labeling_note": "Populate 150-250 examples from the selected brand's held-out Twitter conversations. Label intent, expected resolution, reference reply, escalation, and human quality. Do not manufacture human-agreement results; run the human-rating protocol first."
+}
