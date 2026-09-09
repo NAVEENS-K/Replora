@@ -4,16 +4,9 @@ from .retrieval import retrieve
 
 
 def run(email: str, examples, top_k: int = 3):
+    """Run the interactive pipeline without treating retrieved references as truth labels."""
     retrieved = retrieve(email, examples, top_k=top_k)
     reply = generate_reply(email, retrieved)
     evidence = [x.example.reference_reply for x in retrieved]
-    best = retrieved[0].example if retrieved else None
-    result = evaluate(
-        email,
-        reply,
-        best.reference_reply if best else "",
-        best.key_points if best else [],
-        evidence,
-        best.forbidden_claims if best else [],
-    )
+    result = evaluate(email, reply, "", [], evidence, [])
     return reply, retrieved, result
