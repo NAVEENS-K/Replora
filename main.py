@@ -24,12 +24,10 @@ def print_result(email, reply, result, retrieved):
     print(f"Risk Score        {result.risk_score:.1f}/100")
     print(f"Validation Score  {result.validation_score:.1f}/100")
     print(f"Evidence Coverage {result.evidence_coverage}/{result.evidence_total}")
-
     print("\nVALIDATION")
-    if result.claim_checks:
-        for c in result.claim_checks:
-            print(f"- [{c.status.upper():18} | {c.risk:8}] {c.claim}")
-            print(f"  {c.evidence}")
+    for c in result.claim_checks:
+        print(f"- [{c.status.upper():18} | {c.risk:8}] {c.claim}")
+        print(f"  {c.evidence}")
     report = result.validation_report
     for title, key in [("Forbidden claims", "forbidden_claims"), ("Contradictions", "contradictions"), ("Security issues", "security_issues"), ("Structural issues", "structural_issues")]:
         if report.get(key):
@@ -40,7 +38,6 @@ def print_result(email, reply, result, retrieved):
         print("\nMissing required points:")
         for x in result.missing_points:
             print("- " + x)
-
     print("\nSENDABILITY: " + decision.label)
     print(decision.reason)
     print("\nRetrieved evidence:")
@@ -53,37 +50,28 @@ def benchmark(examples):
     for i, target in enumerate(examples):
         pool = examples[:i] + examples[i + 1:]
         retrieved = retrieve(target.incoming_email, pool, top_k=3)
-        reply = generate_reply(target.incoming_email, retrieved)
+        reply = generate_reply(target.incoming_email, retrieved, target.forbidden_claims)
         evidence = [x.example.reference_reply for x in retrieved]
         result = evaluate(target.incoming_email, reply, target.reference_reply, target.key_points, evidence, target.forbidden_claims)
         decision = decide(result.quality_score, result.risk_score, result.unsupported_claims, result.validation_report)
         results.append({
-            "id": target.id,
-            "category": target.category,
-            "quality_score": result.quality_score,
-            "risk_score": result.risk_score,
+            "id": target.id, "category": target.category,
+            "quality_score": result.quality_score, "risk_score": result.risk_score,
             "validation_score": result.validation_score,
-            "evidence_coverage": result.evidence_coverage,
-            "evidence_total": result.evidence_total,
-            "correctness": result.correctness,
-            "relevance": result.relevance,
-            "completeness": result.completeness,
-            "groundedness": result.groundedness,
-            "tone": result.tone,
-            "unsupported_claims": result.unsupported_claims,
-            "missing_points": result.missing_points,
+            "evidence_coverage": result.evidence_coverage, "evidence_total": result.evidence_total,
+            "correctness": result.correctness, "relevance": result.relevance,
+            "completeness": result.completeness, "groundedness": result.groundedness, "tone": result.tone,
+            "unsupported_claims": result.unsupported_claims, "missing_points": result.missing_points,
             "contradictions": result.validation_report.get("contradictions", []),
             "security_issues": result.validation_report.get("security_issues", []),
             "recommendation": decision.label,
         })
         print(f"{target.id:8} quality={result.quality_score:5.1f} risk={result.risk_score:5.1f} validation={result.validation_score:5.1f} coverage={result.evidence_coverage}/{result.evidence_total} {decision.label}")
-
     if not results:
         return
     coverage = [x["evidence_coverage"] / max(1, x["evidence_total"]) for x in results]
     summary = {
-        "test_cases": len(results),
-        "evaluation": "leave-one-out",
+        "test_cases": len(results), "evaluation": "leave-one-out",
         "average_quality_score": round(sum(x["quality_score"] for x in results) / len(results), 2),
         "average_risk_score": round(sum(x["risk_score"] for x in results) / len(results), 2),
         "average_validation_score": round(sum(x["validation_score"] for x in results) / len(results), 2),
@@ -106,17 +94,7 @@ def benchmark(examples):
     print("\n" + "=" * 72)
     print("REPLORA BENCHMARK")
     print("=" * 72)
-    for k, label in [
-        ("test_cases", "Test cases"), ("evaluation", "Evaluation"),
-        ("average_quality_score", "Quality Score"), ("average_risk_score", "Risk Score"),
-        ("average_validation_score", "Validation Score"), ("average_evidence_coverage", "Evidence Coverage"),
-        ("average_correctness", "Correctness"), ("average_relevance", "Relevance"),
-        ("average_completeness", "Completeness"), ("average_groundedness", "Groundedness"),
-        ("average_tone", "Tone"), ("high_risk_responses", "High-risk replies"),
-        ("contradiction_count", "Contradictions"), ("security_issue_count", "Security issues"),
-        ("safe_to_suggest", "Safe to suggest"), ("needs_review", "Needs review"),
-        ("do_not_suggest", "Do not suggest")
-    ]:
+    for k, label in [("test_cases", "Test cases"), ("evaluation", "Evaluation"), ("average_quality_score", "Quality Score"), ("average_risk_score", "Risk Score"), ("average_validation_score", "Validation Score"), ("average_evidence_coverage", "Evidence Coverage"), ("average_correctness", "Correctness"), ("average_relevance", "Relevance"), ("average_completeness", "Completeness"), ("average_groundedness", "Groundedness"), ("average_tone", "Tone"), ("high_risk_responses", "High-risk replies"), ("contradiction_count", "Contradictions"), ("security_issue_count", "Security issues"), ("safe_to_suggest", "Safe to suggest"), ("needs_review", "Needs review"), ("do_not_suggest", "Do not suggest")]:
         print(f"{label + ':':23} {summary[k]}")
 
 
